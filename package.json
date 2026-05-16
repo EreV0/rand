@@ -1,15 +1,10 @@
 {
-  "name": "chatapp",
+  "name": "rand",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "main": "src/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
     "bcrypt": "^6.0.0",
     "express": "^5.2.1",
