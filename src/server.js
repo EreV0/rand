@@ -14,11 +14,24 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, '..')));
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-const storage = multer.diskStorage({
+// Audio upload
+const audioStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, 'uploads/'),
   filename: (req, file, cb) => cb(null, Date.now() + '.webm')
 });
-const upload = multer({ storage });
+const upload = multer({ storage: audioStorage });
+
+// Image upload
+const imageStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, 'uploads/'),
+  filename: (req, file, cb) => {
+    const ext = file.mimetype.split('/')[1];
+    cb(null, Date.now() + '.' + ext);
+  }
+});
+const imageUpload = multer({ storage: imageStorage });
+
+app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.post('/register', async (req, res) => {
   try {
@@ -52,6 +65,16 @@ app.get('/users', async (req, res) => {
 });
 
 app.post('/upload-audio', upload.single('audio'), async (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  try {
+    verifyToken(token);
+    res.json({ url: '/uploads/' + req.file.filename });
+  } catch {
+    res.status(401).json({ error: 'Unauthorized' });
+  }
+});
+
+app.post('/upload-image', imageUpload.single('image'), async (req, res) => {
   const token = req.headers.authorization?.split(' ')[1];
   try {
     verifyToken(token);
@@ -121,6 +144,20 @@ app.post('/read/:senderId', async (req, res) => {
   }
 });
 
+app.delete('/messages/:id', async (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  try {
+    const user = verifyToken(token);
+    await pool.query(
+      'DELETE FROM messages WHERE id = $1 AND sender_id = $2',
+      [req.params.id, user.id]
+    );
+    res.json({ success: true });
+  } catch {
+    res.status(401).json({ error: 'Unauthorized' });
+  }
+});
+
 const clients = new Map();
 
 wss.on('connection', (ws) => {
@@ -141,12 +178,18 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'message' && currentUser) {
-      const { receiverId, content, audioUrl, replyTo } = msg;
+      const { receiverId, content, audioUrl, imageUrl, replyTo } = msg;
 
       const result = await pool.query(
         `INSERT INTO messages (sender_id, receiver_id, content, audio_url, reply_to)
          VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-        [currentUser.id, receiverId, audioUrl ? '[audio]' : content, audioUrl || null, replyTo || null]
+        [
+          currentUser.id,
+          receiverId,
+          audioUrl ? '[audio]' : imageUrl ? '[image]' : content,
+          audioUrl || imageUrl || null,
+          replyTo || null,
+        ]
       );
 
       const msgId = result.rows[0].id;
@@ -168,8 +211,9 @@ wss.on('connection', (ws) => {
         id: msgId,
         senderId: currentUser.id,
         senderName: currentUser.username,
-        content: audioUrl ? null : content,
+        content: audioUrl || imageUrl ? null : content,
         audioUrl: audioUrl || null,
+        imageUrl: imageUrl || null,
         replyTo: replyTo || null,
         replyContent,
         replySender,
@@ -179,7 +223,6 @@ wss.on('connection', (ws) => {
       const receiverWs = clients.get(receiverId);
       if (receiverWs && receiverWs.readyState === WebSocket.OPEN) {
         receiverWs.send(payload);
-        // Mark as read immediately if receiver is online and in same chat
         await pool.query(`UPDATE messages SET is_read = TRUE WHERE id = $1`, [msgId]);
         ws.send(JSON.stringify({ type: 'read', msgId }));
       }
@@ -188,15 +231,28 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'typing' && currentUser) {
-    const receiverWs = clients.get(msg.receiverId);
-    if (receiverWs && receiverWs.readyState === WebSocket.OPEN) {
-      receiverWs.send(JSON.stringify({
-        type: 'typing',
-        senderId: currentUser.id,
-        isTyping: msg.isTyping,
-      }));
+      const receiverWs = clients.get(msg.receiverId);
+      if (receiverWs && receiverWs.readyState === WebSocket.OPEN) {
+        receiverWs.send(JSON.stringify({
+          type: 'typing',
+          senderId: currentUser.id,
+          isTyping: msg.isTyping,
+        }));
+      }
     }
-  }
+
+    if (msg.type === 'delete' && currentUser) {
+      const { messageId, receiverId } = msg;
+      await pool.query(
+        'DELETE FROM messages WHERE id = $1 AND sender_id = $2',
+        [messageId, currentUser.id]
+      );
+      const receiverWs = clients.get(receiverId);
+      if (receiverWs && receiverWs.readyState === WebSocket.OPEN) {
+        receiverWs.send(JSON.stringify({ type: 'delete', messageId }));
+      }
+      ws.send(JSON.stringify({ type: 'delete', messageId }));
+    }
   });
 
   ws.on('close', () => {
@@ -207,5 +263,3 @@ wss.on('connection', (ws) => {
 server.listen(process.env.PORT || 3000, '0.0.0.0', () => {
   console.log('Server running on http://localhost:3000');
 });
-
-app.get('/health', (req, res) => res.json({ ok: true }));
