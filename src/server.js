@@ -187,16 +187,16 @@ wss.on('connection', (ws) => {
       ws.send(payload);
     }
 
-    if (msg.type === 'read' && currentUser) {
-      await pool.query(
-        `UPDATE messages SET is_read = TRUE WHERE sender_id = $1 AND receiver_id = $2 AND is_read = FALSE`,
-        [msg.fromId, currentUser.id]
-      );
-      const senderWs = clients.get(msg.fromId);
-      if (senderWs && senderWs.readyState === WebSocket.OPEN) {
-        senderWs.send(JSON.stringify({ type: 'read_all', fromId: currentUser.id }));
-      }
+    if (msg.type === 'typing' && currentUser) {
+    const receiverWs = clients.get(msg.receiverId);
+    if (receiverWs && receiverWs.readyState === WebSocket.OPEN) {
+      receiverWs.send(JSON.stringify({
+        type: 'typing',
+        senderId: currentUser.id,
+        isTyping: msg.isTyping,
+      }));
     }
+  }
   });
 
   ws.on('close', () => {
