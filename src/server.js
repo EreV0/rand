@@ -10,26 +10,15 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, '..')));
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-// Audio upload
 const audioStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, 'uploads/'),
   filename: (req, file, cb) => cb(null, Date.now() + '.webm')
 });
 const upload = multer({ storage: audioStorage });
-
-// Image upload
-const imageStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, 'uploads/'),
-  filename: (req, file, cb) => {
-    const ext = file.mimetype.split('/')[1];
-    cb(null, Date.now() + '.' + ext);
-  }
-});
-const imageUpload = multer({ storage: imageStorage });
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
@@ -74,16 +63,6 @@ app.post('/upload-audio', upload.single('audio'), async (req, res) => {
   }
 });
 
-app.post('/upload-image', imageUpload.single('image'), async (req, res) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  try {
-    verifyToken(token);
-    res.json({ url: '/uploads/' + req.file.filename });
-  } catch {
-    res.status(401).json({ error: 'Unauthorized' });
-  }
-});
-
 app.get('/messages/:receiverId', async (req, res) => {
   const token = req.headers.authorization?.split(' ')[1];
   try {
@@ -102,43 +81,6 @@ app.get('/messages/:receiverId', async (req, res) => {
       [user.id, receiverId]
     );
     res.json(result.rows);
-  } catch {
-    res.status(401).json({ error: 'Unauthorized' });
-  }
-});
-
-app.get('/search/:receiverId', async (req, res) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  try {
-    const user = verifyToken(token);
-    const { receiverId } = req.params;
-    const { q } = req.query;
-    const result = await pool.query(
-      `SELECT m.*, u.username as sender_name
-       FROM messages m
-       JOIN users u ON m.sender_id = u.id
-       WHERE ((m.sender_id = $1 AND m.receiver_id = $2)
-          OR (m.sender_id = $2 AND m.receiver_id = $1))
-         AND m.content ILIKE $3
-       ORDER BY m.created_at ASC`,
-      [user.id, receiverId, `%${q}%`]
-    );
-    res.json(result.rows);
-  } catch {
-    res.status(401).json({ error: 'Unauthorized' });
-  }
-});
-
-app.post('/read/:senderId', async (req, res) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  try {
-    const user = verifyToken(token);
-    await pool.query(
-      `UPDATE messages SET is_read = TRUE
-       WHERE sender_id = $1 AND receiver_id = $2 AND is_read = FALSE`,
-      [req.params.senderId, user.id]
-    );
-    res.json({ success: true });
   } catch {
     res.status(401).json({ error: 'Unauthorized' });
   }
@@ -178,17 +120,18 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'message' && currentUser) {
-      const { receiverId, content, audioUrl, imageUrl, replyTo } = msg;
+      const { receiverId, content, audioUrl, imageData, replyTo } = msg;
 
       const result = await pool.query(
-        `INSERT INTO messages (sender_id, receiver_id, content, audio_url, reply_to)
-         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        `INSERT INTO messages (sender_id, receiver_id, content, audio_url, reply_to, image_data)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
         [
           currentUser.id,
           receiverId,
-          audioUrl ? '[audio]' : imageUrl ? '[image]' : content,
-          audioUrl || imageUrl || null,
+          audioUrl ? '[audio]' : imageData ? '[image]' : content,
+          audioUrl || null,
           replyTo || null,
+          imageData || null,
         ]
       );
 
@@ -211,9 +154,9 @@ wss.on('connection', (ws) => {
         id: msgId,
         senderId: currentUser.id,
         senderName: currentUser.username,
-        content: audioUrl || imageUrl ? null : content,
+        content: audioUrl || imageData ? null : content,
         audioUrl: audioUrl || null,
-        imageUrl: imageUrl || null,
+        imageData: imageData || null,
         replyTo: replyTo || null,
         replyContent,
         replySender,
